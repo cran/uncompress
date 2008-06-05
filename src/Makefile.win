@@ -1,0 +1,29 @@
+#-*- Makefile -*-
+include ../../gnuwin32/MkRules
+
+MODULE=uncompress
+all: makeMakedeps ../../../modules/$(MODULE).dll
+
+CSOURCES=uncompress.c
+
+CFLAGS=$(OPTFLAGS)
+OBJS=$(CSOURCES:.c=.o)
+
+../../../modules/$(MODULE).dll: $(OBJS)
+	$(MKDIR) -p ../../../modules
+	@$(ECHO) "EXPORTS" > uncompress.def
+	@$(ECHO) " R_init_uncompress" >> uncompress.def
+	$(DLL) -shared  -o $@ $^ uncompress.def -L../../../$(IMPDIR) -lR
+	@$(RM) uncompress.def
+
+clean:
+	@$(RM) Makedeps *.d *.o $(MODULE).def $(MODULE).dll
+
+# Dependencies
+DEPS=$(CSOURCES:.c=.d)
+
+makeMakedeps: $(DEPS)
+	@$(RM) Makedeps
+	@cat $(DEPS) >> Makedeps
+
+-include Makedeps
