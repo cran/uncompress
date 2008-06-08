@@ -5,12 +5,12 @@
 \usage{uncompress(data)}
 \arguments{\item{data}{The raw binary data to decompress.}}
 \examples{
-library("uncompress");
+library("uncompress")
 \dontrun{
-handle <- file("man/file.Z", "rb");
-data <- readBin(handle, "raw", 9999999);
-close(handle);
-uncomp_data <- uncompress::uncompress(data);
+handle <- file("file.Z", "rb")
+data <- readBin(handle, "raw", 9999999)
+close(handle)
+uncomp_data <- uncompress(data)
 }
 }
 \keyword{file}
