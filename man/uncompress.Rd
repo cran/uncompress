@@ -1,7 +1,7 @@
 \name{uncompress}
 \alias{uncompress}
 \title{Uncompress .Z file data}
-\description{Uncompresses data compressed with the "compress" utility. Data pass in and returned are both raw binary strings.}
+\description{Uncompresses data compressed with the "compress" utility. Data pass in and returned are both raw binary strings. Invalid compressed data results in an error being returned.}
 \usage{uncompress(data)}
 \arguments{\item{data}{The raw binary data to decompress.}}
 \examples{
@@ -12,7 +12,7 @@ library("uncompress")
 handle <- file("file.Z", "rb")
 # The size here is arbitrary, it should be large enough for most files,
 #  adjust as necessary.
-data <- readBin(handle, "raw", 9999999)
+data <- readBin(handle, "raw", 99999999)
 close(handle)
 uncomp_data <- uncompress(data)
 # At this point you might want to check if uncomp_data is NULL in case the
@@ -26,7 +26,7 @@ print(lines)
 handle <- url("http://host/path/file.Z", "rb")
 # The size here is arbitrary, it should be large enough for most files,
 #  adjust as necessary.
-data <- readBin(handle, "raw", 9999999)
+data <- readBin(handle, "raw", 99999999)
 close(handle)
 uncomp_data <- uncompress(data)
 # At this point you might want to check if uncomp_data is NULL in case the
@@ -43,7 +43,7 @@ download.file("http://host/path/file.Z", "file.Z", mode="wb")
 handle <- file("file.Z", "rb")
 # The size here is arbitrary, it should be large enough for most files,
 #  adjust as necessary.
-data <- readBin(handle, "raw", 9999999)
+data <- readBin(handle, "raw", 99999999)
 close(handle)
 uncomp_data <- uncompress(data)
 # At this point you might want to check if uncomp_data is NULL in case the
@@ -58,7 +58,7 @@ print(lines)
 handle <- url("http://host/path/file.Z", "rb")
 # The size here is arbitrary, it should be large enough for most files,
 #  adjust as necessary.
-data <- readBin(handle, "raw", 9999999)
+data <- readBin(handle, "raw", 99999999)
 close(handle)
 uncomp_data <- uncompress(data)
 handle <- file("file.Z", "wb")

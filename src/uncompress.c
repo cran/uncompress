@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <string.h>
+#include <stdio.h>
 
 #include <R.h>
 #include <Rinternals.h>
@@ -86,19 +87,21 @@ SEXP R_uncompress(const SEXP data) {
   SEXP ret_data;
 
   unsigned char pos = 0;
-  unsigned char info, block_mode, max_bits, table_bits, curstr_alloc, laststr_alloc;
+  unsigned char info, block_mode, max_bits, table_bits;
+  unsigned long curstr_alloc, laststr_alloc, cachestr_alloc;
   unsigned char** table;
-  unsigned char* ret, * laststr, * curstr;
+  unsigned char* ret, * laststr, * curstr, * cachestr;
   unsigned long table_size, table_alloc, ret_size, ret_alloc, max_entries, curstr_len, laststr_len;
 
-  if( TYPEOF(data) != RAWSXP )
-    return R_NilValue;
+  if( TYPEOF(data) != RAWSXP ) {
+    error_return("uncompress() accepts only a single RAW vector as its argument");
+  }
   start = RAW_POINTER(data);
   end = start + GET_LENGTH(data);
 
   if( read_bits(&start, end, &pos, 8) != 31 || read_bits(&start, end, &pos, 8) != 157 ) {
     /* not valid data to uncompress */
-    return R_NilValue;
+    error_return("data passed to uncompress() does not appear to be compressed with \"compress\"");
   }
   info = read_bits(&start, end, &pos, 8);
   block_mode = info>>7;
@@ -116,19 +119,27 @@ SEXP R_uncompress(const SEXP data) {
   curstr = 0;
   curstr_alloc = 0;
   curstr_len = 0;
+  cachestr = 0;
+  cachestr_alloc = 0;
   while(start < end) {
     unsigned long code = read_bits(&start, end, &pos, table_bits);
-    if( start > end || (start == end && pos != 0 ) )
+    if( start > end || (start == end && pos != 0) )
       break; /* end of data */
     if( block_mode && code == 256 ) {
       reinit_table(&table, block_mode, &table_size, &table_alloc);
       table_bits = 9;
-      if( laststr_alloc )
-        free(laststr);
+      if( laststr_alloc ) {
+        if( !cachestr ) {
+          cachestr = laststr;
+          cachestr_alloc = laststr_alloc;
+        } else {
+          free(laststr);
+        }
+      }
       laststr = 0;
       laststr_alloc = 0;
       laststr_len = 0;
-      start = (const char*)((((((unsigned long)(start))+12)>>4)<<4)+3);
+      start = (const unsigned char*)((((((unsigned long)(start))+12)>>4)<<4)+3);
     } else {
       if( code > table_size ) {
         /* invalid compressed data */
@@ -138,7 +149,7 @@ SEXP R_uncompress(const SEXP data) {
           free(curstr);
         if( laststr_alloc )
           free(laststr);
-        return R_NilValue;
+        error_return("corrupt compressed data detected in uncompress() [code value outside of table]");
       }
       if( code == table_size ) {
         unsigned char* temp = curstr;
@@ -151,28 +162,43 @@ SEXP R_uncompress(const SEXP data) {
             free(curstr);
           if( laststr_alloc )
             free(laststr);
-          return R_NilValue;
+          error_return("corrupt compressed data detected in uncompress() [repeat code issued without prior token]");
         }
 
+        ++curstr_len;
         if( curstr_alloc ) {
-          curstr = realloc(curstr, curstr_len + 1);
+          if( curstr_len > curstr_alloc ) {
+            curstr_alloc <<= 1;
+            curstr = realloc(curstr, curstr_alloc);
+          }
           if( laststr == temp )
             laststr = curstr;
         } else {
-          curstr = malloc(curstr_len + 1);
+          if( curstr_len <= cachestr_alloc ) {
+            curstr_alloc = cachestr_alloc;
+            curstr = cachestr;
+            cachestr = 0;
+            cachestr_alloc = 0;
+          } else {
+            curstr_alloc = curstr_len<<1;
+            curstr = malloc(curstr_alloc);
+          }
           memcpy(curstr, temp, curstr_len);
-          curstr_alloc = 1;
         }
-        curstr[curstr_len++] = laststr[0];
+        curstr[curstr_len-1] = laststr[0];
       } else {
         curstr_len = table[code][0] | (((unsigned short)table[code][1])<<8);
         if( curstr_alloc ) {
           if( laststr == curstr ) {
-            laststr = malloc(laststr_len);
-            memcpy(laststr, curstr, laststr_len);
-            laststr_alloc = 1;
+            laststr_alloc = curstr_alloc;
+          } else {
+            if( !cachestr ) {
+              cachestr = curstr;
+              cachestr_alloc = curstr_alloc;
+            } else {
+              free(curstr);
+            }
           }
-          free(curstr);
         }
         curstr = table[code]+2;
         curstr_alloc = 0;
@@ -206,9 +232,83 @@ SEXP R_uncompress(const SEXP data) {
   return ret_data;
 }
 
+R_INLINE void R_rawToLines_makeStr(SEXP strs, int index, const unsigned char* last, const unsigned char* cur) {
+  SEXP str;
+  char* temp;
+  if( cur-last ) {
+    temp = malloc(cur-last+1);
+    strncpy(temp, (const char*)last, cur-last);
+    temp[cur-last] = '\0';
+    str = Rf_mkChar(temp);
+    free(temp);
+    SET_STRING_ELT(strs, index, str);
+  }
+}
+
+SEXP R_rawToLines(const SEXP data, const SEXP start_line_sexp, const SEXP line_count_sexp) {
+  const unsigned char* start, * end, * last;
+  unsigned long num_lines, i, start_line, line_count;
+  SEXP ret_data;
+
+  if( TYPEOF(data) != RAWSXP || (TYPEOF(start_line_sexp) != INTSXP && TYPEOF(start_line_sexp) != REALSXP) || (TYPEOF(line_count_sexp) != INTSXP && TYPEOF(line_count_sexp) != REALSXP) ) {
+    error_return("rawToLines() accepts only a single RAW vector followed by two integers as its arguments");
+  }
+  start = RAW_POINTER(data);
+  end = start + GET_LENGTH(data);
+  start_line = TYPEOF(start_line_sexp) != INTSXP ? (unsigned long)*REAL(start_line_sexp) : *INTEGER(start_line_sexp);
+  line_count = TYPEOF(line_count_sexp) != INTSXP ? (unsigned long)*REAL(line_count_sexp) : *INTEGER(line_count_sexp);
+
+  num_lines = 1;
+  while( start < end ) {
+    if( start[0] == '\n' ) {
+      ++num_lines;
+    } else if( start < end-1 && start[0] == '\r' && start[1] == '\n' ) {
+      ++num_lines;
+      ++start;
+    }
+    ++start;
+    if( num_lines >= start_line+line_count )
+      break;
+  }
+  if( start_line > num_lines ) {
+    char buf[256];
+    sprintf(buf, "rawToLines() called with a start line of %ld but there are only %ld lines in the data", start_line, num_lines);
+    error_return(buf);
+  }
+
+  start = RAW_POINTER(data);
+  ret_data = Rf_allocVector(STRSXP, num_lines-start_line);
+  R_PreserveObject(ret_data);
+  i = 0;
+  last = start;
+  while( start < end ) {
+    if( start[0] == '\n' ) {
+      if( i >= start_line )
+        R_rawToLines_makeStr(ret_data, i-start_line, last, start);
+      ++i;
+      last = start+1;
+    } else if( start < end-1 && start[0] == '\r' && start[1] == '\n' ) {
+      if( i >= start_line )
+        R_rawToLines_makeStr(ret_data, i-start_line, last, start);
+      ++i;
+      ++start;
+      last = start+1;
+    }
+    ++start;
+    if( i == start_line + line_count )
+      break;
+  }
+  if( i >= start_line && i < start_line + line_count )
+    R_rawToLines_makeStr(ret_data, i-start_line, last, start);
+
+  R_ReleaseObject(ret_data);
+  return ret_data;
+}
+
 void R_init_uncompress(DllInfo* info) {
   R_CallMethodDef callMethods[] = {
     { "uncompress", (DL_FUNC)R_uncompress, 1 },
+    { "rawToLines", (DL_FUNC)R_rawToLines, 3 },
     { NULL, NULL, 0 }
   };
 
