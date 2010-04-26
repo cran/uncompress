@@ -10,7 +10,7 @@
 #include <Rdefines.h>
 #include <R_ext/Rdynload.h>
 
-R_INLINE unsigned long read_bits(const unsigned char** start, const unsigned char* end, unsigned char* pos, int num_bits) {
+static R_INLINE unsigned long read_bits(const unsigned char** start, const unsigned char* end, unsigned char* pos, int num_bits) {
   unsigned long ret = 0;
   unsigned char shift = 0;
   unsigned char rpos = *pos;
@@ -31,15 +31,45 @@ R_INLINE unsigned long read_bits(const unsigned char** start, const unsigned cha
   return ret;
 }
 
-R_INLINE unsigned char** init_table(unsigned char block_mode, unsigned long* table_size, unsigned long* table_alloc) {
+#define POOL_BLOCK_SIZE 16384
+#define POOL_ARGS char*** pool, unsigned long* pools, unsigned long* pool_used
+#define POOL_PASS pool, pools, pool_used
+#define POOL_PASS2 &pool, &pools, &pool_used
+static R_INLINE char* init_pool(POOL_ARGS) {
+  pool[0] = (char**)NULL;
+  pools[0] = 0;
+  pool_used[0] = POOL_BLOCK_SIZE;
+}
+static R_INLINE char* free_pool(POOL_ARGS) {
+  unsigned long i;
+  for( i = 0; i < pools[0]; ++i ) {
+    free(pool[0][i]);
+  }
+  free(pool[0]);
+  init_pool(POOL_PASS);
+}
+static R_INLINE char* allocate_string(unsigned long len, POOL_ARGS) {
+  if( pool_used[0] + len > POOL_BLOCK_SIZE ) {
+    ++pools[0];
+    pool[0] = realloc(pool[0], sizeof(char*)*pools[0]);
+    pool[0][pools[0]-1] = (char*)malloc(POOL_BLOCK_SIZE);
+    pool_used[0] = 0;
+  }
+  char* ret = pool[0][pools[0]-1] + pool_used[0];
+  pool_used[0] += len;
+  return ret;
+}
+
+static R_INLINE unsigned char** init_table(unsigned char block_mode, char** table_cache, unsigned long* table_size, unsigned long* table_alloc) {
   int i;
   unsigned char** ret;
 
   *table_alloc = 1024;
   *table_size = 256 + (block_mode ? 1 : 0);
+  *table_cache = (char*)malloc(768);
   ret = malloc((*table_alloc)*sizeof(unsigned char*));
   for( i = 0; i < 256; ++i ) {
-    ret[i] = malloc(4);
+    ret[i] = *table_cache + i*3;
     ret[i][0] = 1;
     ret[i][1] = 0;
     ret[i][2] = (unsigned char)i;
@@ -48,24 +78,27 @@ R_INLINE unsigned char** init_table(unsigned char block_mode, unsigned long* tab
 
   return ret;
 }
-R_INLINE void reinit_table(unsigned char*** table, unsigned char block_mode, unsigned long* table_size, unsigned long* table_alloc) {
+static R_INLINE void reinit_table(unsigned char*** table, unsigned char block_mode, unsigned long* table_size, unsigned long* table_alloc, POOL_ARGS) {
   *table_size = 256 + (block_mode ? 1 : 0);
+  free_pool(POOL_PASS);
 }
-R_INLINE void free_table(unsigned char** table, unsigned long table_alloc) {
+static R_INLINE void free_table(unsigned char** table, char** table_cache, unsigned long table_alloc, POOL_ARGS) {
   int i;
 
-  for( i = 0; i < table_alloc; ++i ) {
-    free(table[i]);
-  }
+  free_pool(POOL_PASS);
+//  for( i = 0; i < table_alloc; ++i ) {
+//    free(table[i]);
+//  }
+  free(*table_cache);
   free(table);
 }
-R_INLINE void add_table_entry(unsigned char*** table, unsigned long* table_size, unsigned long* table_alloc, unsigned char* str, unsigned short str_len, unsigned char chr) {
+static R_INLINE void add_table_entry(unsigned char*** table, unsigned long* table_size, unsigned long* table_alloc, unsigned char* str, unsigned short str_len, unsigned char chr, POOL_ARGS) {
   if( *table_size == *table_alloc ) {
     *table_alloc += 1024;
     *table = (unsigned char**)realloc(*table, (*table_alloc)*sizeof(unsigned char*));
     memset((*table) + *table_alloc - 1024, 0, 1024*sizeof(unsigned char*));
   }
-  (*table)[*table_size] = malloc(str_len+3);
+  (*table)[*table_size] = allocate_string(str_len+3, POOL_PASS);
   (*table)[*table_size][0] = (str_len+1)&255;
   (*table)[*table_size][1] = (str_len+1)>>8;
   memcpy((*table)[*table_size]+2, str, str_len);
@@ -73,7 +106,7 @@ R_INLINE void add_table_entry(unsigned char*** table, unsigned long* table_size,
   *table_size += 1;
 }
 
-R_INLINE void append_ret(unsigned char** ret, unsigned long* ret_size, unsigned long* ret_alloc, unsigned char* str, unsigned short len) {
+static R_INLINE void append_ret(unsigned char** ret, unsigned long* ret_size, unsigned long* ret_alloc, unsigned char* str, unsigned short len) {
   if( *ret_size + len > *ret_alloc ) {
     *ret_alloc += 4096;
     *ret = realloc(*ret, *ret_alloc);
@@ -83,20 +116,26 @@ R_INLINE void append_ret(unsigned char** ret, unsigned long* ret_size, unsigned 
 }
 
 SEXP R_uncompress(const SEXP data) {
-  const unsigned char* start, * end;
+  const unsigned char* init_start, * start, * end;
   SEXP ret_data;
 
   unsigned char pos = 0;
   unsigned char info, block_mode, max_bits, table_bits;
   unsigned long curstr_alloc, laststr_alloc, cachestr_alloc;
   unsigned char** table;
+  char* table_cache;
   unsigned char* ret, * laststr, * curstr, * cachestr;
   unsigned long table_size, table_alloc, ret_size, ret_alloc, max_entries, curstr_len, laststr_len;
+
+  char** pool;
+  unsigned long pools;
+  unsigned long pool_used;
+  init_pool(POOL_PASS2);
 
   if( TYPEOF(data) != RAWSXP ) {
     error_return("uncompress() accepts only a single RAW vector as its argument");
   }
-  start = RAW_POINTER(data);
+  init_start = start = RAW_POINTER(data);
   end = start + GET_LENGTH(data);
 
   if( read_bits(&start, end, &pos, 8) != 31 || read_bits(&start, end, &pos, 8) != 157 ) {
@@ -106,7 +145,7 @@ SEXP R_uncompress(const SEXP data) {
   info = read_bits(&start, end, &pos, 8);
   block_mode = info>>7;
   max_bits = info&31;
-  table = init_table(block_mode, &table_size, &table_alloc);
+  table = init_table(block_mode, &table_cache, &table_size, &table_alloc);
   table_bits = 9;
   ret = 0;
   ret_size = 0;
@@ -126,7 +165,7 @@ SEXP R_uncompress(const SEXP data) {
     if( start > end || (start == end && pos != 0) )
       break; /* end of data */
     if( block_mode && code == 256 ) {
-      reinit_table(&table, block_mode, &table_size, &table_alloc);
+      reinit_table(&table, block_mode, &table_size, &table_alloc, POOL_PASS2);
       table_bits = 9;
       if( laststr_alloc ) {
         if( !cachestr ) {
@@ -139,11 +178,11 @@ SEXP R_uncompress(const SEXP data) {
       laststr = 0;
       laststr_alloc = 0;
       laststr_len = 0;
-      start = (const unsigned char*)((((((unsigned long)(start))+12)>>4)<<4)+3);
+      start = init_start + (((((start - init_start)+12)>>4)<<4)+3);
     } else {
       if( code > table_size ) {
         /* invalid compressed data */
-        free_table(table, table_alloc);
+        free_table(table, &table_cache, table_alloc, POOL_PASS2);
         free(ret);
         if( curstr_alloc )
           free(curstr);
@@ -156,7 +195,7 @@ SEXP R_uncompress(const SEXP data) {
 
         if( !laststr ) {
           /* invalid compressed data */
-          free_table(table, table_alloc);
+          free_table(table, &table_cache, table_alloc, POOL_PASS2);
           free(ret);
           if( curstr_alloc )
             free(curstr);
@@ -181,6 +220,8 @@ SEXP R_uncompress(const SEXP data) {
             cachestr_alloc = 0;
           } else {
             curstr_alloc = curstr_len<<1;
+            if( curstr_alloc < 16 )
+              curstr_alloc = 16;
             curstr = malloc(curstr_alloc);
           }
           memcpy(curstr, temp, curstr_len);
@@ -207,13 +248,18 @@ SEXP R_uncompress(const SEXP data) {
       append_ret(&ret, &ret_size, &ret_alloc, curstr, curstr_len);
 
       if( table_size < max_entries && laststr ) {
-        add_table_entry(&table, &table_size, &table_alloc, laststr, laststr_len, curstr[0]);
+        add_table_entry(&table, &table_size, &table_alloc, laststr, laststr_len, curstr[0], POOL_PASS2);
         if( table_size == (1<<table_bits) && table_bits != max_bits )
           ++table_bits;
       }
 
       if( laststr_alloc ) {
-        free(laststr);
+        if( !cachestr ) {
+          cachestr = laststr;
+          cachestr_alloc = laststr_alloc;
+        } else {
+          free(laststr);
+        }
         laststr_alloc = 0;
       }
       laststr = curstr;
@@ -225,22 +271,21 @@ SEXP R_uncompress(const SEXP data) {
     free(curstr);
   if( laststr_alloc )
     free(laststr);
-  free_table(table, table_alloc);
+  free_table(table, &table_cache, table_alloc, POOL_PASS2);
 
   ret_data = NEW_RAW(ret_size);
   memcpy(RAW_POINTER(ret_data), ret, ret_size);
   return ret_data;
 }
 
-R_INLINE void R_rawToLines_makeStr(SEXP strs, int index, const unsigned char* last, const unsigned char* cur) {
+static R_INLINE void R_rawToLines_makeStr(SEXP strs, int index, const unsigned char* last, const unsigned char* cur) {
   SEXP str;
   char* temp;
   if( cur-last ) {
-    temp = malloc(cur-last+1);
+    temp = alloca(cur-last+1);
     strncpy(temp, (const char*)last, cur-last);
     temp[cur-last] = '\0';
     str = Rf_mkChar(temp);
-    free(temp);
     SET_STRING_ELT(strs, index, str);
   }
 }

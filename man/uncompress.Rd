@@ -61,7 +61,7 @@ handle <- url("http://host/path/file.Z", "rb")
 data <- readBin(handle, "raw", 99999999)
 close(handle)
 uncomp_data <- uncompress(data)
-handle <- file("file.Z", "wb")
+handle <- file("file", "wb")
 writeBin(uncomp_data, handle)
 close(handle)
 
