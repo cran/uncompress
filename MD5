@@ -1,0 +1,9 @@
+866ad1537ff2f36051381917676214de *DESCRIPTION
+9fdfeb11f7ddba6f3aab9aaa6b1ac5dd *NAMESPACE
+20c7a4ee46f93ae15c06d0a4d71861e2 *R/zzz.R
+84195fd3f3e4f265239fafa8bcb982f7 *man/rawToLines.Rd
+77506aa6c2197452f5b9493dd9bad99a *man/uncompress.Rd
+172198c882ab0f7b2be82a98b13b2b83 *man/uncompressToLines.Rd
+d90e270a503faec7122dc50bfe8ac1cb *src/uncompress.c
+b5b38e1672d8928e304435a5b4354da5 *tests/test.Z
+284b61f109e297360a74f930bc79b2c2 *tests/test_uncompress.R

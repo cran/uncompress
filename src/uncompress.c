@@ -160,7 +160,7 @@ SEXP R_uncompress(const SEXP data) {
   curstr_len = 0;
   cachestr = 0;
   cachestr_alloc = 0;
-  while(start < end) {
+  while(start + ((table_bits+7)>>3) <= end) {
     unsigned long code = read_bits(&start, end, &pos, table_bits);
     if( start > end || (start == end && pos != 0) )
       break; /* end of data */
