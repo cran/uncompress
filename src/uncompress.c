@@ -69,7 +69,7 @@ static R_INLINE unsigned char** init_table(unsigned char block_mode, char** tabl
   *table_cache = (char*)malloc(768);
   ret = malloc((*table_alloc)*sizeof(unsigned char*));
   for( i = 0; i < 256; ++i ) {
-    ret[i] = *table_cache + i*3;
+    ret[i] = (unsigned char*)(*table_cache + i*3);
     ret[i][0] = 1;
     ret[i][1] = 0;
     ret[i][2] = (unsigned char)i;
@@ -98,7 +98,7 @@ static R_INLINE void add_table_entry(unsigned char*** table, unsigned long* tabl
     *table = (unsigned char**)realloc(*table, (*table_alloc)*sizeof(unsigned char*));
     memset((*table) + *table_alloc - 1024, 0, 1024*sizeof(unsigned char*));
   }
-  (*table)[*table_size] = allocate_string(str_len+3, POOL_PASS);
+  (*table)[*table_size] = (unsigned char*)allocate_string(str_len+3, POOL_PASS);
   (*table)[*table_size][0] = (str_len+1)&255;
   (*table)[*table_size][1] = (str_len+1)>>8;
   memcpy((*table)[*table_size]+2, str, str_len);
@@ -280,13 +280,8 @@ SEXP R_uncompress(const SEXP data) {
 
 static R_INLINE void R_rawToLines_makeStr(SEXP strs, int index, const unsigned char* last, const unsigned char* cur) {
   SEXP str;
-  char* temp;
   if( cur-last ) {
-    temp = alloca(cur-last+1);
-    strncpy(temp, (const char*)last, cur-last);
-    temp[cur-last] = '\0';
-    str = Rf_mkChar(temp);
-    SET_STRING_ELT(strs, index, str);
+    SET_STRING_ELT(strs, index, mkCharLen(last, cur-last)); 
   }
 }
 
